@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>打飞盘 FPS — H5 原型 v4</title>
+  <title>打飞盘 FPS — H5 原型 v5（波次+换枪在波末+加命100分+加大弹匣）</title>
   <style>
     html, body { height: 100%; margin: 0; background: #0b1020; color: #e9ecf1; font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Microsoft YaHei, Arial, sans-serif; }
     #wrap { position: relative; height: 100%; overflow: hidden; }
@@ -46,6 +46,7 @@
       <div class="pill" id="score">分数 0</div>
       <div class="pill" id="weapon">武器 M249</div>
       <div class="pill" id="level">难度 Lv.1</div>
+      <div class="pill" id="wave">第 1 波</div>
       <div class="pill row" style="opacity:.85;">
         <span class="key">鼠标左键</span>射击
         <span class="key">R</span>换弹
@@ -60,10 +61,10 @@
         <h1>打飞盘 FPS</h1>
         <p>站桩瞄准，击落飞盘得分与连击，逐步解锁更强武器与更高难度。</p>
         <ul>
-          <li>武器顺序：M249（连发） → M16（三连发） → M700（单发） → 格洛克（单发）</li>
-          <li>命中心点（CENTER）分数更高；连击越高加分越多。</li>
-          <li>早期（M249/M16）：飞盘更快更多；后期（M700/格洛克）：更慢更少。</li>
-          <li>漏掉飞盘会扣生命，生命归零游戏结束。每累计得分可奖励生命。</li>
+          <li>武器按**波次**更换：第1-10波 M249 → 11-20波 M16（三连） → 21-30波 M700 → 31波起 格洛克。</li>
+          <li>每波有固定数量飞盘；清屏后进入中场显示“下一波”，期间不刷飞盘。</li>
+          <li>命中心点（CENTER）奖励更高；连击越高加分越多且有空枪宽容。</li>
+          <li>漏掉飞盘扣生命；每累计 100 分 +1 生命（上限5）。</li>
         </ul>
         <div class="btns">
           <button id="startBtn">开始游戏</button>
@@ -108,6 +109,7 @@
     const scoreEl = document.getElementById('score');
     const weaponEl = document.getElementById('weapon');
     const levelEl  = document.getElementById('level');
+    const waveEl   = document.getElementById('wave');
     const livesEl  = document.getElementById('lives');
     const banner   = document.getElementById('banner');
 
@@ -173,7 +175,7 @@
     });
 
     // Game State
-    let running = false, paused = false, intermission = false;
+    let running = false, paused = false, intermission = false, waveActive = false;
     let lastTime = 0; // ms
     let discs = [];
     let particles = [];
@@ -182,12 +184,16 @@
     let hitsTotal = 0;
     let lives = 3;
 
+    let wave = 1;          // 当前波数
+    let waveSpawned = 0;   // 本波已生成数量
+    let waveTotal = 0;     // 本波目标数量
+
     // Combo grace: 允许间隔空枪不立刻断连
     let shotsSinceLastHit = 0;
     const COMBO_GRACE_SHOTS = 1; // 可改为2更宽容
 
     // Score-based life reward
-    const LIFE_PER_POINTS = 20;   // 每累计20分+1生命
+    const LIFE_PER_POINTS = 100;   // 每累计100分+1生命
     const MAX_LIVES = 5;
     let nextLifeScoreStep = LIFE_PER_POINTS; // 下一个加命阈值
 
@@ -228,13 +234,13 @@
     const Weapons = {
       M249: {
         id: 'M249', name: 'M249', points: 10, fireRate: 12, spread: 6, damage: 1,
-        shot: fireHitscan, burst: 1, reloadTime: 0.8, mag: 40,
+        shot: fireHitscan, burst: 1, reloadTime: 0.8, mag: 80, // 弹匣增大
         recoil: 2.0, sfx: 'auto', spawnSpeedMul: 1.25, spawnCountBase: 3, requireEdge:false
       },
       M16: {
         id: 'M16', name: 'M16（三连发）', points: 15, fireRate: 4, spread: 4, damage: 1,
-        shot: fireHitscan, burst: 3, burstGap: 60, reloadTime: 1.1, mag: 24,
-        recoil: 2.6, sfx: 'burst', spawnSpeedMul: 1.15, spawnCountBase: 3, requireEdge:true // 需要点击触发
+        shot: fireHitscan, burst: 3, burstGap: 60, reloadTime: 1.1, mag: 36, // 弹匣增大
+        recoil: 2.6, sfx: 'burst', spawnSpeedMul: 1.15, spawnCountBase: 3, requireEdge:true // 手动点击
       },
       M700: {
         id: 'M700', name: 'M700', points: 25, fireRate: 1.2, spread: 1.2, damage: 1,
@@ -248,18 +254,24 @@
       }
     };
 
-    // Progress thresholds by total hits
-    const progression = [
-      { hits: 0,   weapon: Weapons.M249 },
-      { hits: 25,  weapon: Weapons.M16 },
-      { hits: 60,  weapon: Weapons.M700 },
-      { hits: 90,  weapon: Weapons.GLOCK },
-    ];
+    function computeWeaponForWave(w){
+      if (w <= 10) return Weapons.M249;
+      if (w <= 20) return Weapons.M16;
+      if (w <= 30) return Weapons.M700;
+      return Weapons.GLOCK;
+    }
 
-    let weapon = Weapons.M249;
-    let bulletsInMag = weapon.mag;
-    let fireCooldown = 0; // ms left for next shot
-    let reloading = false;
+    function updateWeaponByWave(){
+      const newW = computeWeaponForWave(wave);
+      if (weapon.id !== newW.id){
+        weapon = newW; bulletsInMag = weapon.mag; fireCooldown = 0; reloading = false;
+        weaponEl.textContent = `武器 ${weapon.name}`;
+      }
+      level = wave; // 将难度和波数关联
+      levelEl.textContent = `难度 Lv.${level}`;
+      weaponEl.textContent = `武器 ${weapon.name}${reloading ? '（换弹中…）' : ''}`;
+      waveEl.textContent = `第 ${wave} 波`;
+    }
 
     function showBanner(msg, ms=1500){
       banner.innerHTML = `<div class="pill">${msg}</div>`;
@@ -273,34 +285,31 @@
       anim.onfinish = () => { banner.style.display='none'; banner.innerHTML=''; };
     }
 
-    function startIntermission(msg){
-      intermission = true;
-      discs = []; // 清屏
-      showBanner(msg);
-      setTimeout(()=>{ intermission = false; }, 1500);
+    function startWave(){
+      waveActive = true;
+      waveSpawned = 0;
+      waveTotal = computeWaveSize();
+      waveEl.textContent = `第 ${wave} 波`;
+      showBanner(`第 ${wave} 波`);
     }
 
-    function updateWeaponByHits() {
-      for (let i = progression.length - 1; i >= 0; i--) {
-        if (hitsTotal >= progression[i].hits) {
-          const w = progression[i].weapon;
-          if (weapon.id !== w.id) {
-            weapon = w; bulletsInMag = weapon.mag; fireCooldown = 0; reloading = false;
-            weaponEl.textContent = `武器 ${weapon.name}`;
-            showBanner(`下一波：切换 ${weapon.name}`);
-            intermission = true; // 中场不出飞盘
-            setTimeout(()=>{ intermission = false; }, 1500);
-          }
-          break;
-        }
-      }
-      // Level = 1 + floor(hitsTotal / 15)
-      const newLv = 1 + Math.floor(hitsTotal / 15);
-      if (newLv !== level) {
-        level = newLv;
-        levelEl.textContent = `难度 Lv.${level}`;
-      }
-      weaponEl.textContent = `武器 ${weapon.name}${reloading ? '（换弹中…）' : ''}`;
+    function endWave(){
+      waveActive = false;
+      discs = []; // 清屏，画面里飞盘没有了
+      intermission = true;
+      // 先在波末换枪，再提示下一波
+      wave += 1;
+      updateWeaponByWave();
+      showBanner(`下一波：第 ${wave} 波（${weapon.name}）`);
+      setTimeout(()=>{ intermission = false; startWave(); }, 1500);
+    }
+
+    function computeWaveSize(){
+      // 每波数量按武器阶段设置（早期多，后期少）
+      if (weapon.id==='M249') return 14;
+      if (weapon.id==='M16')  return 12;
+      if (weapon.id==='M700') return 9;
+      return 8; // GLOCK
     }
 
     function reload() {
@@ -374,21 +383,19 @@
     }
 
     function ensureSpawns(dt) {
-      if (intermission) return; // 中场不刷盘
-      // 基于武器阶段与生命数的数量平衡
-      const baseWant = weapon.spawnCountBase; // 1~3
-      let want = Math.min(baseWant + Math.floor(level/3), 6);
-      if (lives === 2) want = Math.max(1, want - 1);
-      if (lives === 1) want = Math.max(1, want - 2);
-      if (discs.length < want) spawnDisc();
-      let extra = (weapon.id==='M249'||weapon.id==='M16') ? 0.035 : 0.012;
-      if (lives === 2) extra *= 0.8; if (lives === 1) extra *= 0.6;
-      if (Math.random() < extra) spawnDisc();
+      if (intermission || !waveActive) return; // 中场或未开始本波不刷盘
+      // 控制同时在场数量（早期多，后期少）
+      const concurrentCap = (weapon.id==='M249'||weapon.id==='M16') ? 5 : 3;
+      if (discs.length >= concurrentCap) return;
+      if (waveSpawned >= waveTotal) return;
+      spawnDisc();
+      waveSpawned++;
     }
 
     // Shooting logic — hitscan under cursor with spread
     function tryShoot(dt) {
       if (!running || paused || reloading) return;
+      if (!waveActive || intermission) return; // 中场不能射击
       fireCooldown -= dt; if (fireCooldown < 0) fireCooldown = 0;
 
       const wantFire = pointer.down;
@@ -442,7 +449,7 @@
     }
 
     function checkLifeReward(prevScore, newScore){
-      // 每跨越20分台阶 +1 命
+      // 每跨越100分台阶 +1 命
       while (newScore >= nextLifeScoreStep) {
         if (lives < MAX_LIVES) {
           lives++;
@@ -488,7 +495,7 @@
         scoreEl.textContent = `分数 ${score}`;
         // 清空空枪计数（击中）
         shotsSinceLastHit = 0;
-        updateWeaponByHits();
+        updateWeaponByWave();
         checkLifeReward(prevScore, score);
 
         // particles and float text
@@ -536,6 +543,10 @@
         ensureSpawns(dt);
         update(dt);
         tryShoot(dt);
+        // 本波结束条件：已生成完且场上无飞盘
+        if (waveActive && waveSpawned >= waveTotal && discs.length === 0) {
+          endWave();
+        }
       }
       draw();
       requestAnimationFrame(loop);
@@ -715,7 +726,7 @@
     }
 
     function gameOver(){
-      running = false; paused = false;
+      running = false; paused = false; waveActive = false;
       finalScoreEl.textContent = `你的得分：${score}`;
       menu.style.display = 'none';
       pauseLayer.style.display = 'none';
@@ -725,7 +736,7 @@
     }
 
     function showMenu(){
-      running = false; paused = false;
+      running = false; paused = false; waveActive = false;
       menu.style.display = 'grid';
       pauseLayer.style.display = 'none';
       gameoverLayer.style.display = 'none';
@@ -735,11 +746,12 @@
       discs = [];
       particles = [];
       score = 0; combo = 0; level = 1; hitsTotal = 0; lives = 3;
-      shotsSinceLastHit = 0; nextLifeScoreStep = LIFE_PER_POINTS; intermission = false;
+      shotsSinceLastHit = 0; nextLifeScoreStep = LIFE_PER_POINTS; intermission = false; waveActive = false;
       weapon = Weapons.M249; bulletsInMag = weapon.mag; fireCooldown = 0; reloading = false;
       scoreEl.textContent = '分数 0';
       weaponEl.textContent = `武器 ${weapon.name}`;
       levelEl.textContent = '难度 Lv.1';
+      wave = 1; waveSpawned = 0; waveTotal = 0; waveEl.textContent = '第 1 波';
       updateLivesHUD();
       recoilY = 0; recoilVel = 0; shake = 0;
     }
@@ -750,6 +762,8 @@
       menu.style.display = 'none';
       pauseLayer.style.display = 'none';
       gameoverLayer.style.display = 'none';
+      updateWeaponByWave();
+      startWave();
       requestAnimationFrame(loop);
     }
 
