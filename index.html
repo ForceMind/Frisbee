@@ -176,18 +176,25 @@
     });
 
     // Game State
-    let running = false, paused = false, intermission = false, waveActive = false;
-    let lastTime = 0; // ms
-    let discs = [];
-    let particles = [];
-    let score = 0, combo = 0;
-    let level = 1; // difficulty level
-    let hitsTotal = 0;
-    let lives = 3;
 
-    let wave = 1;          // 当前波数
-    let waveSpawned = 0;   // 本波已生成数量
-    let waveTotal = 0;     // 本波目标数量
+  let running = false, paused = false, intermission = false, waveActive = false;
+  let lastTime = 0; // ms
+  let discs = [];
+  let particles = [];
+  let score = 0, combo = 0;
+  let level = 1; // difficulty level
+  let hitsTotal = 0;
+  let lives = 3;
+
+  // 修复 bulletsInMag 未定义问题
+  let weapon = null;
+  let bulletsInMag = 0;
+  let fireCooldown = 0;
+  let reloading = false;
+
+  let wave = 1;          // 当前波数
+  let waveSpawned = 0;   // 本波已生成数量
+  let waveTotal = 0;     // 本波目标数量
 
     // Combo grace: 允许间隔空枪不立刻断连
     let shotsSinceLastHit = 0;
@@ -683,6 +690,7 @@
     }
 
     function drawAmmo() {
+      if (!weapon) return; // weapon 为空时不绘制
       const x = wrap.clientWidth - 20;
       const y = wrap.clientHeight - 20;
       const w = 130, h = 16;
@@ -704,9 +712,10 @@
     }
 
     function drawGun(w, h){
+      if (!weapon) return; // weapon 为空时不绘制
       // simple stylized gun at bottom-right; recoil moves it down/up
-      const baseX = w - 220;
-      const baseY = h - 120 + recoilY;
+  const baseX = w - 220;
+  const baseY = h - 180 + recoilY; // 向上移动60像素，避免遮挡子弹余额
       ctx.save();
       ctx.translate(baseX, baseY);
       // hand
