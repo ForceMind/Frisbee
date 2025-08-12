@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>打飞盘 FPS — H5 原型</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b1020; color: #e9ecf1; font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Microsoft YaHei, Arial, sans-serif; }
+    #wrap { position: relative; height: 100%; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+
+    /* HUD */
+    .hud { position: absolute; left: 16px; top: 16px; display: grid; gap: 6px; user-select: none; pointer-events: none; }
+    .pill { background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.15); padding: 8px 10px; border-radius: 10px; font-size: 14px; letter-spacing: .3px; }
+    .row { display: flex; gap: 10px; align-items: center; }
+    .key { display:inline-block; border: 1px solid rgba(255,255,255,.25); border-bottom-width: 2px; padding: 2px 6px; border-radius: 6px; font-size: 12px; }
+
+    /* Center overlays */
+    #menu, #pause { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(1200px 800px at 50% 50%, rgba(0,0,0,.55), rgba(0,0,0,.85)); }
+    .card { width: min(92vw, 720px); background: rgba(16,20,40,.85); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 22px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    p { margin: 6px 0; color: #c5cbda; }
+    ul { margin: 8px 0 0 18px; color: #c5cbda; }
+    .btns { margin-top: 14px; display:flex; gap: 10px; flex-wrap: wrap; }
+    button { background: #3a7cff; color: white; border: 0; border-radius: 12px; padding: 10px 14px; font-weight: 600; letter-spacing: .3px; box-shadow: 0 6px 16px rgba(58,124,255,.36); cursor: pointer; }
+    button.secondary { background: #2a2f45; box-shadow: none; }
+    button:active { transform: translateY(1px); }
+
+    /* Floating hit text */
+    .float { position: absolute; transform: translate(-50%, -50%); color: #fff; font-weight: 700; text-shadow: 0 2px 8px rgba(0,0,0,.6); pointer-events:none; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game"></canvas>
+
+    <div class="hud">
+      <div class="pill" id="score">分数 0</div>
+      <div class="pill" id="weapon">武器 机枪</div>
+      <div class="pill" id="level">难度 Lv.1</div>
+      <div class="pill row" style="opacity:.85;">
+        <span class="key">鼠标左键</span>射击
+        <span class="key">R</span>换弹
+        <span class="key">P</span>暂停
+      </div>
+    </div>
+
+    <div id="menu">
+      <div class="card">
+        <h1>打飞盘 FPS</h1>
+        <p>站桩瞄准，击落飞盘得分与连击，逐步解锁更强武器与更高难度。</p>
+        <ul>
+          <li>武器顺序：机枪 → 三连发步枪 → 莫辛纳甘 → 单发手枪</li>
+          <li>命中心点可获得额外加分（CENTER!）。</li>
+          <li>飞盘会从各方向飞入，速度/体型/轨迹随难度提升。</li>
+        </ul>
+        <div class="btns">
+          <button id="startBtn">开始游戏</button>
+          <button class="secondary" id="howBtn">玩法说明</button>
+        </div>
+        <div id="how" style="display:none; margin-top:8px;">
+          <p>左键射击，保持连击会有分数加成；<strong>R</strong>键手动换弹；<strong>P</strong>键暂停/继续。</p>
+        </div>
+      </div>
+    </div>
+
+    <div id="pause" style="display:none;">
+      <div class="card">
+        <h1>已暂停</h1>
+        <p>按 <span class="key">P</span> 继续游戏，或选择：</p>
+        <div class="btns">
+          <button id="resumeBtn">继续</button>
+          <button class="secondary" id="restartBtn">重新开始</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  ;(() => {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const wrap = document.getElementById('wrap');
+
+    // HUD
+    const scoreEl = document.getElementById('score');
+    const weaponEl = document.getElementById('weapon');
+    const levelEl  = document.getElementById('level');
+
+    // Overlays
+    const menu = document.getElementById('menu');
+    const pauseLayer = document.getElementById('pause');
+
+    // Buttons
+    document.getElementById('startBtn').onclick = startGame;
+    document.getElementById('howBtn').onclick = () => {
+      const how = document.getElementById('how');
+      how.style.display = how.style.display === 'none' ? 'block' : 'none';
+    };
+    document.getElementById('resumeBtn').onclick = togglePause;
+    document.getElementById('restartBtn').onclick = () => startGame(true);
+
+    // Resize
+    function resize() {
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      canvas.width  = Math.floor(wrap.clientWidth * dpr);
+      canvas.height = Math.floor(wrap.clientHeight * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // scale to CSS pixels
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Input
+    const pointer = { x: canvas.width/2, y: canvas.height/2, down: false };
+    canvas.addEventListener('mousemove', e => {
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = (e.clientX - rect.left);
+      pointer.y = (e.clientY - rect.top);
+    });
+    canvas.addEventListener('mousedown', () => pointer.down = true);
+    canvas.addEventListener('mouseup',   () => pointer.down = false);
+    canvas.addEventListener('mouseleave',() => pointer.down = false);
+    canvas.addEventListener('touchstart', e => {
+      const t = e.changedTouches[0];
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = (t.clientX - rect.left);
+      pointer.y = (t.clientY - rect.top);
+      pointer.down = true;
+      e.preventDefault();
+    }, {passive:false});
+    canvas.addEventListener('touchmove', e => {
+      const t = e.changedTouches[0];
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = (t.clientX - rect.left);
+      pointer.y = (t.clientY - rect.top);
+      e.preventDefault();
+    }, {passive:false});
+    canvas.addEventListener('touchend', () => pointer.down = false);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyR') reload();
+      if (e.code === 'KeyP') togglePause();
+    });
+
+    // Game State
+    let running = false, paused = false;
+    let lastTime = 0; // ms
+    let discs = [];
+    let particles = [];
+    let score = 0, combo = 0;
+    let level = 1; // difficulty level
+    let hitsTotal = 0;
+
+    // Weapon definitions
+    const Weapons = {
+      MG: {
+        id: 'MG', name: '机枪', points: 10, fireRate: 12, spread: 6, damage: 1,
+        shot: fireHitscan, burst: 1, reloadTime: 0.8, mag: 40
+      },
+      TRIPLE: {
+        id: 'TRIPLE', name: '三连发步枪', points: 15, fireRate: 4, spread: 4, damage: 1,
+        shot: fireHitscan, burst: 3, burstGap: 60, reloadTime: 1.1, mag: 24
+      },
+      MOSIN: {
+        id: 'MOSIN', name: '莫辛纳甘', points: 25, fireRate: 1.2, spread: 1.2, damage: 1,
+        shot: fireHitscan, burst: 1, reloadTime: 1.8, mag: 5
+      },
+      PISTOL: {
+        id: 'PISTOL', name: '单发手枪', points: 20, fireRate: 2.4, spread: 1.5, damage: 1,
+        shot: fireHitscan, burst: 1, reloadTime: 1.2, mag: 8
+      }
+    };
+
+    // Progress thresholds by total hits
+    const progression = [
+      { hits: 0,   weapon: Weapons.MG },
+      { hits: 25,  weapon: Weapons.TRIPLE },
+      { hits: 60,  weapon: Weapons.MOSIN },
+      { hits: 90,  weapon: Weapons.PISTOL },
+    ];
+
+    let weapon = Weapons.MG;
+    let bulletsInMag = weapon.mag;
+    let canShoot = true;
+    let fireCooldown = 0; // ms left for next shot
+    let reloading = false;
+
+    function updateWeaponByHits() {
+      for (let i = progression.length - 1; i >= 0; i--) {
+        if (hitsTotal >= progression[i].hits) {
+          const w = progression[i].weapon;
+          if (weapon.id !== w.id) {
+            weapon = w; bulletsInMag = weapon.mag; fireCooldown = 0; reloading = false;
+            flashTop(`武器升级：${weapon.name}`);
+          }
+          break;
+        }
+      }
+      // Level = 1 + floor(hitsTotal / 15)
+      const newLv = 1 + Math.floor(hitsTotal / 15);
+      if (newLv !== level) {
+        level = newLv;
+        levelEl.textContent = `难度 Lv.${level}`;
+      }
+      weaponEl.textContent = `武器 ${weapon.name}${reloading ? '（换弹中…）' : ''}`;
+    }
+
+    function reload() {
+      if (reloading) return;
+      if (bulletsInMag === weapon.mag) return;
+      reloading = true;
+      weaponEl.textContent = `武器 ${weapon.name}（换弹中…）`;
+      setTimeout(() => {
+        bulletsInMag = weapon.mag;
+        reloading = false;
+        weaponEl.textContent = `武器 ${weapon.name}`;
+      }, weapon.reloadTime * 1000);
+    }
+
+    // Floating HUD messages
+    function flashTop(text) {
+      const el = document.createElement('div');
+      el.className = 'pill';
+      el.style.position = 'absolute';
+      el.style.top = '16px';
+      el.style.right = '16px';
+      el.style.opacity = '0';
+      el.textContent = text;
+      wrap.appendChild(el);
+      // animate
+      el.animate([
+        { transform: 'translateY(0)', opacity: 0 },
+        { transform: 'translateY(10px)', opacity: 1, offset: .2 },
+        { transform: 'translateY(0)', opacity: 1, offset: .8 },
+        { transform: 'translateY(-8px)', opacity: 0 }
+      ], { duration: 1200, easing: 'ease-out' }).onfinish = () => el.remove();
+    }
+
+    function spawnFloatText(x, y, text) {
+      const el = document.createElement('div');
+      el.className = 'float';
+      el.textContent = text;
+      el.style.left = x + 'px';
+      el.style.top  = y + 'px';
+      wrap.appendChild(el);
+      const dur = 800;
+      el.animate([
+        { transform:'translate(-50%, -50%)', opacity:1 },
+        { transform:'translate(-50%, -90%)', opacity:0 }
+      ], { duration: dur, easing: 'ease-out' }).onfinish = () => el.remove();
+    }
+
+    // Disc factory
+    function spawnDisc() {
+      const w = wrap.clientWidth, h = wrap.clientHeight;
+      // choose edge: 0 top, 1 right, 2 bottom, 3 left
+      const edge = Math.floor(Math.random()*4);
+      let x, y, vx, vy;
+      const speedBase = 80 + level * 12; // px/s
+      const size = Math.max(16, 28 - Math.min(level, 10)) * (Math.random()*0.4+0.8); // radius
+
+      if (edge === 0) { x = Math.random()*w; y = -20; }
+      if (edge === 1) { x = w+20; y = Math.random()*h; }
+      if (edge === 2) { x = Math.random()*w; y = h+20; }
+      if (edge === 3) { x = -20; y = Math.random()*h; }
+
+      // target roughly the opposite side
+      const tx = w*0.2 + Math.random()*w*0.6;
+      const ty = h*0.2 + Math.random()*h*0.6;
+      const ang = Math.atan2(ty - y, tx - x);
+      const spd = speedBase * (Math.random()*0.5 + 0.8);
+      vx = Math.cos(ang)*spd;
+      vy = Math.sin(ang)*spd;
+
+      const waveAmp = (level >= 3 ? (8 + Math.random()*18) : 0);
+      const waveFreq = (level >= 3 ? (0.005 + Math.random()*0.015) : 0);
+
+      discs.push({ x, y, r: size, vx, vy, life: 0, waveAmp, waveFreq, alive: true });
+    }
+
+    function ensureSpawns(dt) {
+      // spawn rate grows with level, cap for performance
+      const want = Math.min(1 + Math.floor(level/2), 5);
+      if (discs.length < want) spawnDisc();
+
+      // probabilistic extra spawns
+      if (Math.random() < Math.min(0.005 + level*0.0015, 0.05)) spawnDisc();
+    }
+
+    // Shooting logic — hitscan under cursor with spread
+    let shotHeldAccumulator = 0; // for automatic fire while holding mouse
+
+    function tryShoot(dt) {
+      if (!running || paused || reloading) return;
+      // fire rate control
+      fireCooldown -= dt; if (fireCooldown < 0) fireCooldown = 0;
+
+      // handle input
+      const wantFire = pointer.down;
+
+      if (!wantFire) { shotHeldAccumulator = 0; return; }
+      if (fireCooldown > 0) return;
+
+      if (bulletsInMag <= 0) { reload(); return; }
+
+      const doOneShot = () => {
+        const shots = weapon.burst || 1;
+        let fired = 0;
+        const burstGap = weapon.burstGap || 0; // ms per pellet
+        const shootOne = () => {
+          if (bulletsInMag <= 0) { reload(); return; }
+          bulletsInMag--;
+          // Spread point
+          const spread = weapon.spread;
+          const sx = pointer.x + (Math.random()*2-1)*spread;
+          const sy = pointer.y + (Math.random()*2-1)*spread;
+          weapon.shot(sx, sy);
+          fired++;
+          if (fired < shots) setTimeout(shootOne, burstGap);
+        };
+        shootOne();
+      };
+
+      doOneShot();
+      fireCooldown = 1000 / weapon.fireRate; // ms per trigger
+    }
+
+    function fireHitscan(sx, sy) {
+      // find a disc whose center is within radius from (sx,sy)
+      let hitIndex = -1; let bestDist = Infinity;
+      for (let i = 0; i < discs.length; i++) {
+        const d = discs[i];
+        if (!d.alive) continue;
+        const dx = d.x - sx, dy = d.y - sy;
+        const dist = Math.hypot(dx, dy);
+        if (dist <= d.r && dist < bestDist) { bestDist = dist; hitIndex = i; }
+      }
+      // Visual muzzle flash / crosshair pulse
+      crosshairPulse();
+
+      if (hitIndex >= 0) {
+        const d = discs[hitIndex];
+        d.alive = false;
+        const centerBonus = (bestDist <= d.r * 0.35) ? Math.round(weapon.points * 0.5) : 0;
+        const base = weapon.points;
+        combo = Math.min(combo + 1, 999);
+        const comboBonus = Math.floor(base * Math.min(combo*0.06, 0.6));
+        const gained = base + centerBonus + comboBonus;
+        score += gained;
+        hitsTotal += 1;
+        scoreEl.textContent = `分数 ${score}`;
+        updateWeaponByHits();
+        // particles and float text
+        spawnDiscPop(d.x, d.y, d.r, centerBonus > 0);
+        const msg = `+${gained}${centerBonus>0?' CENTER!':''}${combo>1?` x${combo}`:''}`;
+        spawnFloatText(d.x, d.y, msg);
+      } else {
+        // miss breaks combo (soft)
+        combo = 0;
+      }
+    }
+
+    // Particles
+    function spawnDiscPop(x, y, r, center) {
+      const n = 12 + Math.floor(Math.random()*8);
+      for (let i=0;i<n;i++) {
+        const ang = Math.random()*Math.PI*2;
+        const spd = (center? 160:120) + Math.random()*80;
+        particles.push({
+          x, y,
+          vx: Math.cos(ang)*spd/1000,
+          vy: Math.sin(ang)*spd/1000,
+          life: 0,
+          ttl: 500 + Math.random()*300,
+          size: Math.random()*2 + 1,
+          col: center? '#ffd24d' : '#9ad1ff'
+        });
+      }
+    }
+
+    // Crosshair pulse state
+    let crosshairScale = 1, crosshairAnim = 0;
+    function crosshairPulse() { crosshairAnim = 1; }
+
+    // Game loop
+    function loop(ts) {
+      if (!running) return;
+      const dt = Math.min(34, ts - lastTime || 16); // ms
+      lastTime = ts;
+
+      if (!paused) {
+        ensureSpawns(dt);
+        update(dt);
+        tryShoot(dt);
+      }
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    function update(dt) {
+      // discs update
+      const w = wrap.clientWidth, h = wrap.clientHeight;
+      for (const d of discs) {
+        if (!d.alive) continue;
+        d.life += dt;
+        const t = d.life;
+        const wx = d.waveAmp ? Math.sin(t * d.waveFreq) * d.waveAmp : 0;
+        const wy = d.waveAmp ? Math.cos(t * d.waveFreq*0.8) * d.waveAmp*0.6 : 0;
+        d.x += (d.vx/1000)*dt + wx*0.02;
+        d.y += (d.vy/1000)*dt + wy*0.02;
+        // out of bounds → remove softly
+        if (d.x < -80 || d.x > w+80 || d.y < -80 || d.y > h+80) d.alive = false;
+      }
+      discs = discs.filter(d => d.alive);
+
+      // particles update
+      for (const p of particles) {
+        p.life += dt;
+        p.x += p.vx * dt * 60;
+        p.y += p.vy * dt * 60;
+      }
+      particles = particles.filter(p => p.life < p.ttl);
+    }
+
+    function draw() {
+      const w = wrap.clientWidth, h = wrap.clientHeight;
+      ctx.clearRect(0,0,canvas.width, canvas.height);
+      // sky gradient
+      const grd = ctx.createLinearGradient(0,0,0,h);
+      grd.addColorStop(0, '#0b1020');
+      grd.addColorStop(1, '#111a33');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0,0,w,h);
+
+      // subtle horizon
+      ctx.fillStyle = 'rgba(255,255,255,.03)';
+      ctx.fillRect(0, h*0.72, w, 2);
+
+      // discs
+      for (const d of discs) {
+        // shadow
+        ctx.beginPath();
+        ctx.arc(d.x + d.r*0.15, d.y + d.r*0.15, d.r*0.95, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,.25)';
+        ctx.fill();
+        // rim
+        const rim = ctx.createRadialGradient(d.x, d.y, d.r*0.2, d.x, d.y, d.r);
+        rim.addColorStop(0, '#e8f3ff');
+        rim.addColorStop(1, '#5fb1ff');
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.r, 0, Math.PI*2);
+        ctx.fillStyle = rim;
+        ctx.fill();
+        // center mark
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.r*0.35, 0, Math.PI*2);
+        ctx.strokeStyle = 'rgba(255,255,255,.5)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      // particles
+      for (const p of particles) {
+        const t = p.life / p.ttl;
+        ctx.globalAlpha = 1 - t;
+        ctx.fillStyle = p.col;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // crosshair
+      if (crosshairAnim > 0) {
+        crosshairAnim -= 0.1; if (crosshairAnim < 0) crosshairAnim = 0;
+        crosshairScale = 1 + crosshairAnim*0.2;
+      } else crosshairScale = 1;
+
+      drawCrosshair(pointer.x, pointer.y, crosshairScale);
+
+      // ammo indicator (bottom-right)
+      drawAmmo();
+    }
+
+    function drawCrosshair(x, y, scale) {
+      const r = 12 * scale;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.strokeStyle = 'rgba(255,255,255,.9)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0,0,r,0,Math.PI*2);
+      ctx.moveTo(-r-6,0); ctx.lineTo(-r+2,0);
+      ctx.moveTo(r-2,0);  ctx.lineTo(r+6,0);
+      ctx.moveTo(0,-r-6); ctx.lineTo(0,-r+2);
+      ctx.moveTo(0,r-2);  ctx.lineTo(0,r+6);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawAmmo() {
+      const x = wrap.clientWidth - 20;
+      const y = wrap.clientHeight - 20;
+      const w = 130, h = 16;
+      const ratio = bulletsInMag / weapon.mag;
+      ctx.save();
+      ctx.translate(x - w, y - h);
+      ctx.fillStyle = 'rgba(0,0,0,.35)';
+      ctx.fillRect(0,0,w,h);
+      ctx.fillStyle = '#3a7cff';
+      ctx.fillRect(0,0,Math.max(2, w*ratio), h);
+      ctx.strokeStyle = 'rgba(255,255,255,.2)';
+      ctx.strokeRect(0,0,w,h);
+      ctx.fillStyle = '#e9ecf1';
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`${bulletsInMag} / ${weapon.mag}`, w-4, -2);
+      ctx.restore();
+    }
+
+    function resetState() {
+      discs = [];
+      particles = [];
+      score = 0; combo = 0; level = 1; hitsTotal = 0;
+      weapon = Weapons.MG; bulletsInMag = weapon.mag; canShoot = true; fireCooldown = 0; reloading = false;
+      scoreEl.textContent = '分数 0';
+      weaponEl.textContent = `武器 ${weapon.name}`;
+      levelEl.textContent = '难度 Lv.1';
+    }
+
+    function startGame(forceRestart=false) {
+      resetState();
+      running = true; paused = false; lastTime = performance.now();
+      menu.style.display = 'none';
+      pauseLayer.style.display = 'none';
+      requestAnimationFrame(loop);
+    }
+
+    function togglePause() {
+      if (!running) return;
+      paused = !paused;
+      pauseLayer.style.display = paused ? 'grid' : 'none';
+    }
+
+    // Kickoff idle draw
+    draw();
+  })();
+  </script>
+</body>
+</html>
