@@ -1,0 +1,13 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 飞盘 -->
+  <ellipse cx="48" cy="24" rx="10" ry="4" fill="#FF9800" stroke="#B76E00" stroke-width="2"/>
+  <ellipse cx="48" cy="24" rx="6" ry="2.2" fill="#FFF3E0"/>
+  <!-- 枪身 -->
+  <rect x="10" y="36" width="28" height="8" rx="2" fill="#757575" stroke="#333" stroke-width="1.5"/>
+  <!-- 枪把 -->
+  <rect x="32" y="42" width="7" height="12" rx="2" fill="#BDBDBD" stroke="#333" stroke-width="1.5"/>
+  <!-- 枪口 -->
+  <rect x="7" y="38" width="6" height="4" rx="1" fill="#B0BEC5" stroke="#333" stroke-width="1"/>
+  <!-- 子弹轨迹 -->
+  <path d="M18 40 Q32 28 44 24" stroke="#2196F3" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+</svg>
