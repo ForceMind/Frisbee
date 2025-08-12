@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>打飞盘 FPS — H5 原型 v2</title>
+  <title>打飞盘 FPS — H5 原型 v3</title>
   <style>
     html, body { height: 100%; margin: 0; background: #0b1020; color: #e9ecf1; font-family: system-ui, -apple-system, Segoe UI, Roboto, PingFang SC, Microsoft YaHei, Arial, sans-serif; }
     #wrap { position: relative; height: 100%; overflow: hidden; }
@@ -14,9 +14,12 @@
     .pill { background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.15); padding: 8px 10px; border-radius: 10px; font-size: 14px; letter-spacing: .3px; }
     .row { display: flex; gap: 10px; align-items: center; }
     .key { display:inline-block; border: 1px solid rgba(255,255,255,.25); border-bottom-width: 2px; padding: 2px 6px; border-radius: 6px; font-size: 12px; }
+    .hearts { font-size: 16px; letter-spacing: 2px; }
+    .hearts .heart { color: #ff5a7d; text-shadow: 0 0 8px rgba(255,90,125,.35); }
 
     /* Center overlays */
-    #menu, #pause { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(1200px 800px at 50% 50%, rgba(0,0,0,.55), rgba(0,0,0,.85)); }
+    #menu, #pause, #gameover { position: absolute; inset: 0; display: none; place-items: center; background: radial-gradient(1200px 800px at 50% 50%, rgba(0,0,0,.55), rgba(0,0,0,.85)); }
+    #menu { display:grid; }
     .card { width: min(92vw, 720px); background: rgba(16,20,40,.85); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 22px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
     h1 { margin: 0 0 6px; font-size: 28px; }
     p { margin: 6px 0; color: #c5cbda; }
@@ -35,6 +38,7 @@
     <canvas id="game"></canvas>
 
     <div class="hud">
+      <div class="pill hearts" id="lives">❤❤❤</div>
       <div class="pill" id="score">分数 0</div>
       <div class="pill" id="weapon">武器 M249</div>
       <div class="pill" id="level">难度 Lv.1</div>
@@ -50,9 +54,10 @@
         <h1>打飞盘 FPS</h1>
         <p>站桩瞄准，击落飞盘得分与连击，逐步解锁更强武器与更高难度。</p>
         <ul>
-          <li>武器顺序：M249(连发) → M16(三连发) → M700(单发) → 格洛克</li>
+          <li>武器顺序：M249（连发） → M16（三连发） → M700（单发） → 格洛克（单发）</li>
           <li>命中心点可获得额外加分（CENTER!）。</li>
-          <li>早期（机枪/三连发）：飞盘更快更多；后期（莫辛/手枪）：更慢更少。</li>
+          <li>早期（M249/M16）：飞盘更快更多；后期（M700/格洛克）：更慢更少。</li>
+          <li>漏掉飞盘会扣生命，生命归零游戏结束。</li>
         </ul>
         <div class="btns">
           <button id="startBtn">开始游戏</button>
@@ -64,13 +69,24 @@
       </div>
     </div>
 
-    <div id="pause" style="display:none;">
+    <div id="pause">
       <div class="card">
         <h1>已暂停</h1>
         <p>按 <span class="key">P</span> 继续游戏，或选择：</p>
         <div class="btns">
           <button id="resumeBtn">继续</button>
           <button class="secondary" id="restartBtn">重新开始</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="gameover">
+      <div class="card">
+        <h1>游戏结束</h1>
+        <p id="finalScore">你的得分：0</p>
+        <div class="btns">
+          <button id="retryBtn">再来一局</button>
+          <button class="secondary" id="backBtn">返回主菜单</button>
         </div>
       </div>
     </div>
@@ -86,10 +102,13 @@
     const scoreEl = document.getElementById('score');
     const weaponEl = document.getElementById('weapon');
     const levelEl  = document.getElementById('level');
+    const livesEl  = document.getElementById('lives');
 
     // Overlays
     const menu = document.getElementById('menu');
     const pauseLayer = document.getElementById('pause');
+    const gameoverLayer = document.getElementById('gameover');
+    const finalScoreEl = document.getElementById('finalScore');
 
     // Buttons
     document.getElementById('startBtn').onclick = () => { ensureAudio(); startGame(); };
@@ -99,6 +118,8 @@
     };
     document.getElementById('resumeBtn').onclick = togglePause;
     document.getElementById('restartBtn').onclick = () => startGame(true);
+    document.getElementById('retryBtn').onclick = () => startGame(true);
+    document.getElementById('backBtn').onclick = () => { showMenu(); };
 
     // Resize
     function resize() {
@@ -111,6 +132,7 @@
     resize();
 
     // Input
+    let prevDown = false; // for edge detection
     const pointer = { x: canvas.width/2, y: canvas.height/2, down: false };
     canvas.addEventListener('mousemove', e => {
       const rect = canvas.getBoundingClientRect();
@@ -151,6 +173,7 @@
     let score = 0, combo = 0;
     let level = 1; // difficulty level
     let hitsTotal = 0;
+    let lives = 3;
 
     // Audio (WebAudio) — created on first user gesture
     let audioCtx = null;
@@ -185,41 +208,40 @@
     let recoilY = 0, recoilVel = 0; // for gun sprite
     function kickRecoil(strength){ recoilVel -= strength; }
 
-    // Weapon definitions
+    // Weapon definitions (names按你的修改)
     const Weapons = {
-      MG: {
-        id: 'MG', name: '机枪', points: 10, fireRate: 12, spread: 6, damage: 1,
+      M249: {
+        id: 'M249', name: 'M249', points: 10, fireRate: 12, spread: 6, damage: 1,
         shot: fireHitscan, burst: 1, reloadTime: 0.8, mag: 40,
-        recoil: 2.0, sfx: 'auto', spawnSpeedMul: 1.25, spawnCountBase: 3
+        recoil: 2.0, sfx: 'auto', spawnSpeedMul: 1.25, spawnCountBase: 3, requireEdge:false
       },
-      TRIPLE: {
-        id: 'TRIPLE', name: '三连发步枪', points: 15, fireRate: 4, spread: 4, damage: 1,
+      M16: {
+        id: 'M16', name: 'M16（三连发）', points: 15, fireRate: 4, spread: 4, damage: 1,
         shot: fireHitscan, burst: 3, burstGap: 60, reloadTime: 1.1, mag: 24,
-        recoil: 2.6, sfx: 'burst', spawnSpeedMul: 1.15, spawnCountBase: 3
+        recoil: 2.6, sfx: 'burst', spawnSpeedMul: 1.15, spawnCountBase: 3, requireEdge:true // 需要点击触发
       },
-      MOSIN: {
-        id: 'MOSIN', name: '莫辛纳甘', points: 25, fireRate: 1.2, spread: 1.2, damage: 1,
+      M700: {
+        id: 'M700', name: 'M700', points: 25, fireRate: 1.2, spread: 1.2, damage: 1,
         shot: fireHitscan, burst: 1, reloadTime: 1.8, mag: 5,
-        recoil: 4.0, sfx: 'bolt', spawnSpeedMul: 0.85, spawnCountBase: 1
+        recoil: 4.0, sfx: 'bolt', spawnSpeedMul: 0.85, spawnCountBase: 1, requireEdge:false
       },
-      PISTOL: {
-        id: 'PISTOL', name: '单发手枪', points: 20, fireRate: 2.4, spread: 1.5, damage: 1,
+      GLOCK: {
+        id: 'GLOCK', name: '格洛克', points: 20, fireRate: 2.4, spread: 1.5, damage: 1,
         shot: fireHitscan, burst: 1, reloadTime: 1.2, mag: 8,
-        recoil: 1.6, sfx: 'pistol', spawnSpeedMul: 0.9, spawnCountBase: 1
+        recoil: 1.6, sfx: 'pistol', spawnSpeedMul: 0.9, spawnCountBase: 1, requireEdge:false
       }
     };
 
     // Progress thresholds by total hits
     const progression = [
-      { hits: 0,   weapon: Weapons.MG },
-      { hits: 25,  weapon: Weapons.TRIPLE },
-      { hits: 60,  weapon: Weapons.MOSIN },
-      { hits: 90,  weapon: Weapons.PISTOL },
+      { hits: 0,   weapon: Weapons.M249 },
+      { hits: 25,  weapon: Weapons.M16 },
+      { hits: 60,  weapon: Weapons.M700 },
+      { hits: 90,  weapon: Weapons.GLOCK },
     ];
 
-    let weapon = Weapons.MG;
+    let weapon = Weapons.M249;
     let bulletsInMag = weapon.mag;
-    let canShoot = true;
     let fireCooldown = 0; // ms left for next shot
     let reloading = false;
 
@@ -310,27 +332,35 @@
       const waveAmp = (level >= 3 ? (8 + Math.random()*18) : 0);
       const waveFreq = (level >= 3 ? (0.005 + Math.random()*0.015) : 0);
 
-      discs.push({ x, y, r: size, vx, vy, life: 0, waveAmp, waveFreq, alive: true });
+      discs.push({ x, y, r: size, vx, vy, life: 0, waveAmp, waveFreq, alive: true, hit:false });
     }
 
     function ensureSpawns(dt) {
-      // Weapon-driven pacing: 早期自动火力更快更多；后期单发更慢更少
+      // 基于武器阶段与生命数的数量平衡
       const baseWant = weapon.spawnCountBase; // 1~3
-      const want = Math.min(baseWant + Math.floor(level/3), 6);
+      let want = Math.min(baseWant + Math.floor(level/3), 6);
+      if (lives === 2) want = Math.max(1, want - 1);
+      if (lives === 1) want = Math.max(1, want - 2);
       if (discs.length < want) spawnDisc();
-      const extra = (weapon.id==='MG'||weapon.id==='TRIPLE') ? 0.035 : 0.012;
+      let extra = (weapon.id==='M249'||weapon.id==='M16') ? 0.035 : 0.012;
+      if (lives === 2) extra *= 0.8; if (lives === 1) extra *= 0.6;
       if (Math.random() < extra) spawnDisc();
     }
 
     // Shooting logic — hitscan under cursor with spread
-    let shotHeldAccumulator = 0; // for automatic fire while holding mouse
-
     function tryShoot(dt) {
       if (!running || paused || reloading) return;
       fireCooldown -= dt; if (fireCooldown < 0) fireCooldown = 0;
+
       const wantFire = pointer.down;
-      if (!wantFire) { shotHeldAccumulator = 0; return; }
-      if (fireCooldown > 0) return;
+      const edgeFire = wantFire && !prevDown; // 本帧按下沿
+      prevDown = wantFire;
+
+      // M16（三连发）需要手动点击触发；其他按原逻辑
+      const needEdge = !!weapon.requireEdge;
+      const canTrigger = needEdge ? edgeFire : wantFire;
+
+      if (!canTrigger || fireCooldown > 0) return;
       if (bulletsInMag <= 0) { reload(); return; }
       ensureAudio();
 
@@ -387,7 +417,7 @@
 
       if (hitIndex >= 0) {
         const d = discs[hitIndex];
-        d.alive = false;
+        d.alive = false; d.hit = true;
         const centerBonus = (bestDist <= d.r * 0.35) ? Math.round(weapon.points * 0.5) : 0;
         const base = weapon.points;
         combo = Math.min(combo + 1, 999);
@@ -456,7 +486,8 @@
         const wy = d.waveAmp ? Math.cos(t * d.waveFreq*0.8) * d.waveAmp*0.6 : 0;
         d.x += (d.vx/1000)*dt + wx*0.02;
         d.y += (d.vy/1000)*dt + wy*0.02;
-        if (d.x < -120 || d.x > w+120 || d.y < -120 || d.y > h+120) d.alive = false;
+        // out of bounds → miss
+        if (d.x < -120 || d.x > w+120 || d.y < -120 || d.y > h+120) { d.alive = false; if(!d.hit) missDisc(); }
       }
       discs = discs.filter(d => d.alive);
 
@@ -588,7 +619,7 @@
       ctx.fillStyle = '#d7b79a';
       ctx.fillRect(88, 52, 26, 26);
       // gun body differs a bit by weapon
-      const primary = (weapon.id==='MOSIN')? '#4a4f5e' : (weapon.id==='PISTOL')? '#394055' : '#2e3752';
+      const primary = (weapon.id==='M700')? '#4a4f5e' : (weapon.id==='GLOCK')? '#394055' : '#2e3752';
       const accent  = '#6c86ff';
       // body
       ctx.fillStyle = primary; ctx.fillRect(0, 0, 160, 40);
@@ -603,14 +634,47 @@
       ctx.restore();
     }
 
+    function updateLivesHUD(){
+      livesEl.innerHTML = '<span class="heart">❤</span>'.repeat(Math.max(0,lives));
+    }
+
+    function missDisc(){
+      combo = 0;
+      lives = Math.max(0, lives - 1);
+      updateLivesHUD();
+      // fail sfx
+      beep({freq: 160, dur: 0.12, type: 'sawtooth', gain: 0.2});
+      // flash text middle-top
+      spawnFloatText(wrap.clientWidth * 0.5, 60, '-1 生命');
+      if (lives <= 0) gameOver();
+    }
+
+    function gameOver(){
+      running = false; paused = false;
+      finalScoreEl.textContent = `你的得分：${score}`;
+      menu.style.display = 'none';
+      pauseLayer.style.display = 'none';
+      gameoverLayer.style.display = 'grid';
+      // sfx
+      beep({freq:120, dur:0.2, type:'triangle', gain:0.25});
+    }
+
+    function showMenu(){
+      running = false; paused = false;
+      menu.style.display = 'grid';
+      pauseLayer.style.display = 'none';
+      gameoverLayer.style.display = 'none';
+    }
+
     function resetState() {
       discs = [];
       particles = [];
-      score = 0; combo = 0; level = 1; hitsTotal = 0;
-      weapon = Weapons.MG; bulletsInMag = weapon.mag; canShoot = true; fireCooldown = 0; reloading = false;
+      score = 0; combo = 0; level = 1; hitsTotal = 0; lives = 3;
+      weapon = Weapons.M249; bulletsInMag = weapon.mag; fireCooldown = 0; reloading = false;
       scoreEl.textContent = '分数 0';
       weaponEl.textContent = `武器 ${weapon.name}`;
       levelEl.textContent = '难度 Lv.1';
+      updateLivesHUD();
       recoilY = 0; recoilVel = 0; shake = 0;
     }
 
@@ -619,6 +683,7 @@
       running = true; paused = false; lastTime = performance.now();
       menu.style.display = 'none';
       pauseLayer.style.display = 'none';
+      gameoverLayer.style.display = 'none';
       requestAnimationFrame(loop);
     }
 
@@ -629,6 +694,7 @@
     }
 
     // Kickoff idle draw
+    updateLivesHUD();
     draw();
   })();
   </script>
